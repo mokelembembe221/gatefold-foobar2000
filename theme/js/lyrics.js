@@ -32,6 +32,21 @@ const STAMP = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
 const WORD = /<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>/g;
 const sec = (m, s, f) => +m * 60 + +s + (f ? +f / 10 ** f.length : 0);
 
+const splitTranslation = (line) => {
+  const raw = String(line || '').trim();
+  if (!raw) return { text: '', translation: '' };
+
+  // Common lyric notation: "Original | Translation" or "Original - Translation"
+  const pipe = raw.match(/^(.*?)(?:\s*[|｜]\s*|\s*[-–—]\s*)([A-Za-z0-9 ,.!?"'():;\/\-\u0080-\uFFFF]+)$/);
+  if (pipe && pipe[1] && pipe[2]) {
+    const text = pipe[1].trim();
+    const translation = pipe[2].trim();
+    if (text && translation) return { text, translation };
+  }
+
+  return { text: raw, translation: '' };
+};
+
 /** → { synced, lines:[{t, text, words?:[{t,w}]}], meta, offset } */
 export function parseLRC(text) {
   const meta = {}; let offset = 0;
@@ -45,7 +60,13 @@ export function parseLRC(text) {
     const stamps = []; let m, end = 0;
     while ((m = STAMP.exec(raw)) && m.index === end) { stamps.push(sec(m[1], m[2], m[3])); end = STAMP.lastIndex; }
     let body = raw.slice(end);
-    if (!stamps.length) { if (raw.trim()) plain.push(raw.trim()); continue; }
+    if (!stamps.length) {
+      if (raw.trim()) {
+        const pair = splitTranslation(raw.trim());
+        plain.push({ text: pair.text || raw.trim(), translation: pair.translation || '' });
+      }
+      continue;
+    }
     let words = null;
     if (WORD.test(body)) {
       WORD.lastIndex = 0;
@@ -56,7 +77,9 @@ export function parseLRC(text) {
       body = words.map((x) => x.w).join('');
       if (!words.length) words = null;
     }
-    for (const t of stamps) lines.push({ t: Math.max(0, t - offset), text: body.trim(), words: words && words.map((x) => ({ t: Math.max(0, x.t - offset + (t - stamps[0])), w: x.w })) });
+    const lineBody = body.trim();
+    const pair = splitTranslation(lineBody);
+    for (const t of stamps) lines.push({ t: Math.max(0, t - offset), text: pair.text || lineBody, translation: pair.translation || '', words: words && words.map((x) => ({ t: Math.max(0, x.t - offset + (t - stamps[0])), w: x.w })) });
   }
   if (lines.length >= 2) {
     lines.sort((a, b) => a.t - b.t);
@@ -66,8 +89,11 @@ export function parseLRC(text) {
     while (out.length && !out[out.length - 1].text) out.pop();
     return { synced: true, lines: out, meta, offset };
   }
-  const textLines = String(text || '').split(/\r?\n/).map((s) => s.replace(STAMP, '').trim());
-  return { synced: false, lines: textLines.map((s) => ({ t: -1, text: s })), meta, offset };
+  const textLines = String(text || '').split(/\r?\n/).map((s) => {
+    const pair = splitTranslation(s.replace(STAMP, '').trim());
+    return { t: -1, text: pair.text || s.replace(STAMP, '').trim(), translation: pair.translation || '' };
+  }).filter((s) => s.text);
+  return { synced: false, lines: textLines, meta, offset };
 }
 
 // ================================================================ fetching
@@ -198,14 +224,19 @@ export class LyricView {
     if (!doc.synced) {
       this.track.style.transform = '';
       this.el.classList.add('plain');
-      this.track.innerHTML = doc.lines.map((l) => `<div class="ln plain">${esc(l.text) || '&nbsp;'}</div>`).join('');
+      this.track.innerHTML = doc.lines.map((l) => {
+        const main = esc(l.text) || '&nbsp;';
+        const trans = l.translation ? `<div class="lyr-translation">${esc(l.translation)}</div>` : '';
+        return `<div class="ln plain">${main}${trans}</div>`;
+      }).join('');
       this.stop(); return;
     }
     this.el.classList.remove('plain');
     this.track.innerHTML = doc.lines.map((l, i) => {
       if (!l.text) return `<div class="ln gap" data-i="${i}"><i></i><i></i><i></i></div>`;
       const inner = l.words ? l.words.map((w, j) => `<span data-w="${j}">${esc(w.w)}</span>`).join('') : esc(l.text);
-      return `<div class="ln" data-i="${i}">${inner}</div>`;
+      const trans = l.translation ? `<div class="lyr-translation">${esc(l.translation)}</div>` : '';
+      return `<div class="ln" data-i="${i}">${inner}${trans}</div>`;
     }).join('');
     this.nodes = [...this.track.children];
     this.tick(true);
